@@ -2,27 +2,40 @@ const express = require('express');
 const router = express.Router();
 const multer = require('multer');
 const OpenAI = require('openai');
-const axios = require('axios'); // Thêm axios để tải ảnh từ URL
+const axios = require('axios');
 require('dotenv').config();
 
 const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY
 });
-
 const OPENAI_MODEL_NAME = process.env.OPENAI_MODEL_NAME || "gpt-4o";
-
-// ================= MULTER =================
 const upload = multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: 15 * 1024 * 1024 } // 15MB
+    limits: { fileSize: 15 * 1024 * 1024 }
 }).fields([
     { name: 'bodyImage', maxCount: 1 },
     { name: 'pantImage', maxCount: 1 },
     { name: 'shirtImage', maxCount: 1 }
 ]);
 
-const convertImageToBase64 = (file) => {
-    return file.buffer.toString("base64");
+const processInputToBase64 = async (req, fieldName) => {
+    if (req.files && req.files[fieldName] && req.files[fieldName][0]) {
+        console.log(`[Processing] ${fieldName} found as FILE.`);
+        return req.files[fieldName][0].buffer.toString("base64");
+    }
+    if (req.body && req.body[fieldName]) {
+        const url = req.body[fieldName];
+        try {
+            const response = await axios.get(url, {
+                responseType: 'arraybuffer'
+            });
+            return Buffer.from(response.data).toString('base64');
+        } catch (error) {
+            console.error(`[Download Error] Cannot download image from ${url}`);
+            throw new Error(`Không tải được ảnh từ URL của trường ${fieldName}`);
+        }
+    }
+    return null;
 };
 
 const generateTryonPrompt = () => {
@@ -44,21 +57,21 @@ const generateTryonPrompt = () => {
   Generate a masterpiece that allows the user to accurately judge if the outfit suits their style and body type.`;
 };
 
-// ================= ROUTE =================
 router.post('/generate', upload, async (req, res) => {
     try {
-        const bodyImageBase64 = convertImageToBase64(req.files.bodyImage[0]);
-        const pantImageBase64 = convertImageToBase64(req.files.pantImage[0]);
-        const shirtImageBase64 = convertImageToBase64(req.files.shirtImage[0]);
+        const [bodyBase64, pantBase64, shirtBase64] = await Promise.all([
+            processInputToBase64(req, 'bodyImage'),
+            processInputToBase64(req, 'pantImage'),
+            processInputToBase64(req, 'shirtImage')
+        ]);
 
-        if (!bodyImageBase64 || !pantImageBase64 || !shirtImageBase64) {
+        if (!bodyBase64 || !pantBase64 || !shirtBase64) {
             return res.status(400).json({
                 success: false,
-                message: "Thiếu dữ liệu ảnh! Anh cần cung cấp đủ 3 ảnh (File hoặc URL) cho: bodyImage, pantImage, shirtImage."
+                message: "Thiếu dữ liệu! Vui lòng upload File hoặc điền URL cho cả 3 trường: bodyImage, pantImage, shirtImage."
             });
         }
 
-        // 2️⃣ Gọi OpenAI Vision
         const response = await openai.responses.create({
             model: OPENAI_MODEL_NAME,
             input: [
@@ -66,18 +79,9 @@ router.post('/generate', upload, async (req, res) => {
                     role: "user",
                     content: [
                         { type: "input_text", text: generateTryonPrompt() },
-                        {
-                            type: "input_image",
-                            image_url: `data:image/jpeg;base64,${bodyImageBase64}`,
-                        },
-                        {
-                            type: "input_image",
-                            image_url: `data:image/jpeg;base64,${pantImageBase64}`,
-                        },
-                        {
-                            type: "input_image",
-                            image_url: `data:image/jpeg;base64,${shirtImageBase64}`,
-                        },
+                        { type: "input_image", image_url: `data:image/jpeg;base64,${bodyBase64}` },
+                        { type: "input_image", image_url: `data:image/jpeg;base64,${pantBase64}` },
+                        { type: "input_image", image_url: `data:image/jpeg;base64,${shirtBase64}` },
                     ],
                 }
             ],
@@ -98,7 +102,7 @@ router.post('/generate', upload, async (req, res) => {
         });
 
     } catch (err) {
-        console.error('[TRY-ON ERROR]', err);
+        console.error('[ERROR]', err.message);
         return res.status(500).json({
             success: false,
             error: err.message
