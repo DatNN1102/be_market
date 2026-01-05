@@ -214,4 +214,54 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
+router.get('/recommend/:productId', async (req, res) => {
+  try {
+    const { productId } = req.params;
+    const currentProduct = await Product.findById(productId);
+    if (!currentProduct) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy sản phẩm.' });
+    }
+    let currentFeatures = {};
+    try {
+      currentFeatures = JSON.parse(currentProduct.feature);
+    } catch (e) {
+      return res.status(400).json({ success: false, message: 'Lỗi dữ liệu feature sản phẩm.' });
+    }
+    const featureKeys = Object.keys(currentFeatures);
+    if (featureKeys.length === 0) {
+      return res.status(200).json({ success: true, data: [] });
+    }
+    const relatedProducts = await Product.find({
+      _id: { $ne: productId },
+      status: 1,
+      $or: featureKeys.map(key => ({
+        feature: { $regex: key, $options: 'i' }
+      }))
+    }).limit(20);
+    const recommendations = relatedProducts.filter(product => {
+      try {
+        const productFeats = JSON.parse(product.feature);
+        const hasCrossSell = featureKeys.some(key => {
+          const currentValue = currentFeatures[key];
+          const targetValue = productFeats[key];
+          return targetValue && targetValue !== currentValue;
+        });
+
+        return hasCrossSell;
+      } catch (e) {
+        return false;
+      }
+    });
+
+    res.status(200).json({
+      success: true,
+      data: recommendations.slice(0, 6) 
+    });
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false, message: 'Lỗi máy chủ.', error: error.message });
+  }
+});
+
 module.exports = router;
